@@ -335,38 +335,51 @@ def handle_branch_result(instruction, instruction_index, output_list, exp, ins_d
         ins['stall_lock'] = False
     return (is_branch_taken, loop_start_ins)
 
+def populate_instruction_cache(instruction_index):
+    global I_CACHE
+    global I_CACHE_BLOCK_SIZE
+    global I_CACHE_WORD_SIZE
+    
+    block_no = (instruction_index / I_CACHE_WORD_SIZE) % I_CACHE_BLOCK_SIZE
+    start_word_address = instruction_index - (instruction_index % I_CACHE_WORD_SIZE)
+    for i in range(I_CACHE_WORD_SIZE):
+        I_CACHE[block_no][i] = start_word_address
+        start_word_address += 1
+
 def check_instruction_cache(instruction_index):
     global I_CACHE
     global I_CACHE_BLOCK_SIZE
     global I_CACHE_WORD_SIZE
     
-    block_no = (instruction_index / I_CACHE_SIZE) % I_CACHE_BLOCK_SIZE
+    block_no = (instruction_index / I_CACHE_WORD_SIZE) % I_CACHE_BLOCK_SIZE
     offset = instruction_index % I_CACHE_WORD_SIZE
 
     if I_CACHE[block_no][offset] == instruction_index:
-        return True
+        return False
     else:
-        #Now find starting word addressing
+        '''
         start_word_address = instruction_index - (instruction_index % I_CACHE_WORD_SIZE)
         for i in range(I_CACHE_WORD_SIZE):
             I_CACHE[block_no][i] = start_word_address
             start_word_address += 1
-        return False
+        '''
+        return True
  
 def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_dict, ins_seq, row_index_units): 
-    #check_instruction_cache(0,)
-    clock_counter = 1
+    i_cache_miss_penalty = 3 * I_CACHE_WORD_SIZE
+    populate_instruction_cache(0)
+    clock_counter = 13
     incomplete_ins = [ins_dict.get(0)]
     incomplete_ins[0]['state'] = -1
     incomplete_ins[0]['output_count'] = 0
-    incomplete_ins[0]['clocks'][0] = 1
+    incomplete_ins[0]['clocks'][0] = i_cache_miss_penalty + 1
     write_ins = []
     output_list  = []
     fetch_count = 1
+    penlety_lock = -1000
     while(True):
         n = len(incomplete_ins)
         main_index = 0
-        #for main_index in range(n):
         while main_index < n:
             instruction = incomplete_ins[main_index]
             instruction_index = find_index_of_current_instruction(ins_seq, instruction['complete_ins'])
@@ -385,11 +398,12 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
                     instruction['clocks'][1] = clock_counter
                     update_output_registers(instruction['des'], i_reg_res_status, f_reg_res_status)
                     update_functional_unit(unit_index, f_unit_status, instruction, len(row_index_units))
-                    if ins_dict.get(instruction_index+1): 
+                    if ins_dict.get(instruction_index+1):
                         incomplete_ins.append(ins_dict.get(instruction_index+1))
                         incomplete_ins[-1]['state'] = -1
                         #incomplete_ins[-1]['clocks'][0] = clock_counter
                         incomplete_ins[-1]['output_count'] = fetch_count
+                        prev_ins = instruction
                         n = n + 1
                         fetch_count += 1
                         if instruction['ins_str'] in ['BEQ', 'BNE', 'J']:
@@ -406,8 +420,13 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
                         output_list.append(deepcopy(instruction))
                         break
             elif instruction['state'] == -1:
-                instruction['state'] = 0
-                instruction['clocks'][0] = clock_counter
+                if check_instruction_cache(instruction_index) and penlety_lock == -1000:
+                    penlety_lock = prev_ins['clocks'][0] + i_cache_miss_penalty
+                if penlety_lock < clock_counter:
+                    populate_instruction_cache(instruction_index)
+                    instruction['state'] = 0
+                    instruction['clocks'][0] = clock_counter
+                    penlety_lock = -1000
             elif instruction['state'] == 1 and instruction['stall_lock'] is False:
                 is_hazard = check_RAW_hazard(instruction, f_unit_status)
                 if is_hazard is False:
@@ -458,7 +477,7 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
             instruction['incomplete_index'] = -1
         write_ins = []
         clock_counter += 1
-        if clock_counter == 150:
+        if clock_counter == 200:
             break
     print output_list
     print fetch_count
