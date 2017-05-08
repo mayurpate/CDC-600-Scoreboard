@@ -24,15 +24,19 @@ INSTRUCTION_UNIT_MAP = {'LW': {'unit':'DATA TRANSFER', 'num_cycles':1},'SW': {'u
                         'MUL.D':{'unit':'FP MULTIPLIER', 'num_cycles':0},'DIV.D':{'unit':'FP DIVIDER', 'num_cycles':0}}
 INT_REGISTERS = [0] * 32
 MEMORY_LOCATIONS = [0] * 32
+DATA_MEM = {}
 I_CACHE_BLOCK_SIZE = 0
 I_CACHE_WORD_SIZE = 0
 I_CACHE = []
 
 def decode_instruction(ins):
-    label, ins_str, des, op1, op2, jump_label = None, None, None, None, None, None
+    label, ins_str, des, op1, op2, jump_label, displacement = None, None, None, None, None, None, None
     if ':' in ins[0]:
         label = ins[0].split(':')[0]
         ins = ins[1:len(ins)]
+    elif ':' in ins[1]:
+        label = ins[0]
+        ins = ins[2:len(ins)]
     ins_str = ins[0].upper()
     if not ins_str in VALID_INSTRUCTION_SET:
         print "INVALID INSTRUCTION:%s. Please pass only valid Instructions." %(ins_str)
@@ -44,26 +48,35 @@ def decode_instruction(ins):
     elif ins_str in THREE_OPERAND_INSTRUCTIONS:
         des, op1, op2 = ins[1].split(',')[0], ins[2].split(',')[0], ins[3]
     elif ins_str in LOAD_INSTRUCTIONS:
-        des, op1 = ins[1].split(',')[0], ins[2]
-        #Here some processing will need if indirect addressing is used
+        if ins_str in ['LI', 'LUI']:
+            des, op1 = ins[1].split(',')[0], ins[2]
+        elif ins_str in ['LW','L.D']:
+            des = ins[1].split(',')[0]
+            op1 = ins[2].split('(')[1].split(')')[0]
+            displacement = int(ins[2].split('(')[0])
     elif ins_str in STORE_INSTRUCTIONS:
-        des, op1 = ins[2], ins[1].split(',')[0]
-        #Here some processing will need if indirect addressing is used
-    return label, ins_str, des, op1, op2, jump_label
+        op1 = ins[1].split(',')[0]
+        des = ins[2].split('(')[1].split(')')[0]
+        displacement = int(ins[2].split('(')[0])
+    return label, ins_str, des, op1, op2, jump_label, displacement
 
 def read_instructions(f1):
     ins_seq = []
     ins_dict = {}
     cnt = 0
     for line in f1:
+        print line
         ins = line.split()
-        label, ins_str, des, op1, op2, jump_label = decode_instruction(ins)
+        print ins
+        label, ins_str, des, op1, op2, jump_label, displacement = decode_instruction(ins)
         ins_dict.update({cnt:{'label': label,'ins_str': ins_str,'des': des,
+                    'displacement': displacement,
                     'op1':op1, 'op2':op2, 'jump_label':jump_label, 'state': -1,
                     'complete_ins':line.split('\n')[0],'stall_lock':False, 
                     'functional_unit': INSTRUCTION_UNIT_MAP.get(ins_str).get('unit'),
                     'f_unit_index':-1, 'exp':None, 'temp_result': -1, 'incomplete_index':-1,
-                    'output_count':0, 'clocks':[-1,-1,-1,-1,-1,'N','N','N']}})
+                    'output_count':0, 'clocks':[-1,-1,-1,-1,-1,'N','N','N'],
+                    'branch_next_ins': False}})
         cnt += 1
         ins_seq.append(line.split('\n')[0])
     return ins_dict, ins_seq
@@ -98,12 +111,8 @@ def read_config(f2):
         num_units = line.split(': ')[1].split(',')[0]
         num_cycles = int(line.split(': ')[1].split(',')[1].split()[0])
         if unit_name == 'I-CACHE':
-            print 'Found ICache in config..'
-            print num_units
-            print num_cycles
             I_CACHE_BLOCK_SIZE = int(num_units)
             I_CACHE_WORD_SIZE = int(num_cycles)
-            print I_CACHE_BLOCK_SIZE, I_CACHE_WORD_SIZE
         if unit_name != 'I-CACHE':
             units.update({unit_name:int(num_units)})
         if unit_name == 'FP ADDER':
@@ -121,8 +130,12 @@ def read_config(f2):
 
 def read_data(f3):
     global MEMORY_LOCATIONS
+    global DATA_MEM
     index = 0
+    memory_initial_address = 256
     for line in f3:
+        DATA_MEM.update({memory_initial_address: int(line,2)})
+        memory_initial_address += 4
         MEMORY_LOCATIONS[index] = int(line, 2)
         index += 1
 
@@ -189,6 +202,7 @@ def read_register(register):
         val = INT_REGISTERS[int(register[1:len(register)]) - 1]
     elif register[0] == 'F':
         val = 0
+    print "Register is:%s and val is;%s" %(register, val)
     return val
 
 def extract_values(instruction):
@@ -199,14 +213,21 @@ def extract_values(instruction):
     elif instruction['ins_str'] in ['DADDI','DSUBI', 'ANDI', 'ORI']: 
         op1_val = read_register(instruction['op1'])
         op2_val = int(instruction['op2'])
+    elif instruction['ins_str'] in ['ADD.D', 'MUL.D','SUB.D','DIV.D']:
+        op1_val = 0
+        op2_val = 0
     return op1_val, op2_val
 
 def load_register(instruction):
     val = None
     if instruction['ins_str'] == 'LW':
-        base_register = instruction['op1'].split('(')[1].split(')')[0]
-        val = read_register(base_register) - 256
+        base_register = instruction['op1']
+        #print "Base Register:%s" %base_register
+        #val = read_register(base_register) - 256
+        val = read_register(base_register)
+        #print "Value is:%s" %val
     elif instruction['ins_str'] in ['LI','LUI']:
+        #print 'Instruction is;%s and value is%s' %(instruction['complete_ins'], instruction['op1'])
         val = int(instruction['op1'])
     return val
 
@@ -214,7 +235,7 @@ def store_register(instruction):
     val = None
     if instruction['ins_str'] == 'SW': 
         val1 = read_register(instruction['op1'])
-        val2 = read_register(instruction['des'].split('(')[1].split(')')[0])
+        val2 = read_register(instruction['des'])
         val = "%s##%s" %(val1, val2)
     return val
 
@@ -241,6 +262,7 @@ def read_operands_and_make_expression(instruction):
             exp = make_expression(v1, v2, instruction)
     elif instruction['ins_str'] in LOAD_INSTRUCTIONS:
         exp = load_register(instruction)
+        print "Instruction is:%s and exp is;%s" %(instruction['complete_ins'], exp)
     elif instruction['ins_str'] in STORE_INSTRUCTIONS:
         exp = store_register(instruction)
     elif instruction['ins_str'] in CONDITIONAL_BRANCH_INSTRUCTIONS:
@@ -251,22 +273,28 @@ def read_operands_and_make_expression(instruction):
 
 def execute_instruction(instruction):
     global MEMORY_LOCATIONS
+    global DATA_MEM
+    #print MEMORY_LOCATIONS
     result = None
     if instruction['ins_str'] in THREE_OPERAND_INSTRUCTIONS:
         if instruction['exp']:
             result = eval(instruction['exp'])
     elif instruction['ins_str'] in LOAD_INSTRUCTIONS:
         res = instruction['exp']
+        #print "Instruction is:%s and result is;%s" %(instruction['complete_ins'], res)
         if instruction['ins_str'] == 'LW':
-            displacement = int(instruction['op1'].split('(')[0])
+            displacement = instruction['displacement']
             base_value = res
-            if (displacement + base_value) > 31:
+            if (displacement + base_value) > 380:
                 print "Accessing Out of Memory Data.."
                 sys.exit(0)
-            result = MEMORY_LOCATIONS[displacement + base_value]
+            #print "Displacement is:%s and base value is;%s" %(displacement, base_value)
+            #result = MEMORY_LOCATIONS[displacement + base_value]
+            result = DATA_MEM[displacement + base_value]
         elif instruction['ins_str'] == 'LI':
             if res is not None:
                 result = int(res)
+                #print "Instruction is:%s and result in LI block is:%s" %(instruction['complete_ins'], res)
         elif instruction['ins_str'] == 'LUI':
             if res is not None:
                 result = int(res)
@@ -274,21 +302,25 @@ def execute_instruction(instruction):
     elif instruction['ins_str'] in STORE_INSTRUCTIONS:
         result = instruction['exp']
         if instruction['ins_str'] == 'SW':
+            print "Result in Destination SW is;%s" %(result)
             source_val = int(result.split('##')[0])
-            des_val = int(result.split('##')[1])
-            displacement = int(instruction['des'].split('(')[0])
-            if (displacement + base_value) > 31:
+            des_val = int(result.split('##')[1]) 
+            displacement = instruction['displacement']
+            if (displacement + des_val) > 380:
                 print "Accessing Out of Memory Data.."
                 sys.exit(0)
-            MEMORY_LOCATIONS[des_val + displacement] = source_val
+            #MEMORY_LOCATIONS[des_val + displacement] = source_val
+            DATA_MEM[des_val + displacement] = source_val
     elif instruction['ins_str'] in CONDITIONAL_BRANCH_INSTRUCTIONS:
         pass
     return result
 
 def write_result(instruction):
+    #print "Instruction is:%s and result in write is:%s" %(instruction['complete_ins'], instruction['temp_result'])
     global INT_REGISTERS
     reg = instruction['des']
-    if reg[0] == 'R':
+    print "Instruction is %s and destination is %s" %(instruction['complete_ins'], reg)
+    if reg[0] == 'R' and instruction['temp_result'] is not None:
         INT_REGISTERS[int(reg[1:len(reg)]) - 1] = instruction['temp_result']
         
 def clear_functional_unit(instruction, f_unit_status, num_rows):
@@ -325,14 +357,15 @@ def handle_branch_result(instruction, instruction_index, output_list, exp, ins_d
                 break
         loop_start_ins = deepcopy(ins_dict.get(f_k))
         loop_start_ins.update({'stall_lock':False, 'f_unit_index':-1, 'exp': None, 'temp_result': -1, 
-            'incomplete_ins': -1, 'output_count': fetch_count, 'state':0, 'clocks':[-1,-1,-1,-1,-1,'N','N','N']})  
-        output_list.append(deepcopy(ins_dict.get(instruction_index+1)))
+            'incomplete_ins': -1, 'output_count': fetch_count, 'state':-1, 'clocks':[-1,-1,-1,-1,-1,'N','N','N']})  
+        #output_list.append(deepcopy(ins_dict.get(instruction_index+1)))
         is_branch_taken = True
     else:
-        print "Seq Count:%s" %(instruction_index)
-        print "Instruction Dict:%s" %(ins_dict)
+        #print "Seq Count:%s" %(instruction_index)
+        #print "Instruction Dict:%s" %(ins_dict)
         ins = ins_dict.get(instruction_index+1)
-        ins['stall_lock'] = False
+        if ins:
+            ins['stall_lock'] = False
     return (is_branch_taken, loop_start_ins)
 
 def populate_instruction_cache(instruction_index):
@@ -357,12 +390,6 @@ def check_instruction_cache(instruction_index):
     if I_CACHE[block_no][offset] == instruction_index:
         return False
     else:
-        '''
-        start_word_address = instruction_index - (instruction_index % I_CACHE_WORD_SIZE)
-        for i in range(I_CACHE_WORD_SIZE):
-            I_CACHE[block_no][i] = start_word_address
-            start_word_address += 1
-        '''
         return True
  
 def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_dict, ins_seq, row_index_units): 
@@ -421,12 +448,20 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
                         break
             elif instruction['state'] == -1:
                 if check_instruction_cache(instruction_index) and penlety_lock == -1000:
+                    #print "Cache Miss Occured for instruction:%s" %(instruction['complete_ins']) 
                     penlety_lock = prev_ins['clocks'][0] + i_cache_miss_penalty
                 if penlety_lock < clock_counter:
+                    #print "Lock Removed at clock_counter:%s and instructions are:%s" %(clock_counter, incomplete_ins)
                     populate_instruction_cache(instruction_index)
                     instruction['state'] = 0
                     instruction['clocks'][0] = clock_counter
                     penlety_lock = -1000
+                    if instruction['branch_next_ins']:
+                        output_list.append(deepcopy(instruction))
+                        #incomplete_ins[main_index + 1]['state'] = -1
+                        instruction['branch_next_ins'] = False
+                        incomplete_ins.pop(main_index)
+                        main_index = main_index + 1
             elif instruction['state'] == 1 and instruction['stall_lock'] is False:
                 is_hazard = check_RAW_hazard(instruction, f_unit_status)
                 if is_hazard is False:
@@ -439,19 +474,22 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
                         branch_res = handle_branch_result(instruction, instruction_index, output_list, exp, ins_dict, fetch_count)
                         if branch_res[0]:
                             clock_counter += 1
-                            branch_res[1]['clocks'][0] = clock_counter
+                            #branch_res[1]['clocks'][0] = clock_counter
                             incomplete_ins.append(branch_res[1])
-                            incomplete_ins.pop(main_index+1)
+                            incomplete_ins[main_index+1]['branch_next_ins'] = True
+                            #incomplete_ins.pop(main_index+1)
                         clear_functional_unit(instruction, f_unit_status, len(row_index_units))
                         incomplete_ins.pop(main_index)
                         output_list.append(deepcopy(instruction))
+                        #if clock_counter == 175:
+                        #print "Instructions at Clock Counter %s:%s" %(clock_counter,incomplete_ins)
                         break
                 else:
                     instruction['clocks'][5] = 'Y' 
             elif instruction['state'] == 2 and instruction['stall_lock'] is False:
                 #Now check if at this current clock counter execution is finished or not
                 if clock_counter - instruction['clocks'][2] == INSTRUCTION_UNIT_MAP.get(instruction['ins_str']).get('num_cycles'):
-                    print "Clock Counter is:%s and Performing sub" %(clock_counter) 
+                    #print "Clock Counter is:%s and Performing sub" %(clock_counter) 
                     if instruction['ins_str'] not in ['CONDITIONAL_BRANCH_INSTRUCTIONS']:
                         instruction['state'] = 3
                         instruction['clocks'][3] = clock_counter
@@ -465,7 +503,8 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
         for instruction in write_ins: 
             instruction_index = find_index_of_current_instruction(ins_seq, instruction['complete_ins'])
             instruction['clocks'][4] = clock_counter
-            write_result(instruction)
+            if instruction['ins_str'] not in ['SW', 'S.D']:
+                write_result(instruction)
             clear_functional_unit(instruction, f_unit_status, len(row_index_units))
             clear_output_registers(instruction, i_reg_res_status, f_reg_res_status)
             output_list.append(deepcopy(instruction))
@@ -479,8 +518,8 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
         clock_counter += 1
         if clock_counter == 200:
             break
-    print output_list
-    print fetch_count
+    #print output_list
+    #print fetch_count
     for i in range(0,fetch_count):
         for op in output_list:
             if op and op['output_count'] == i:
@@ -501,6 +540,7 @@ if __name__ == '__main__':
     f1.close()
     f2.close()
     f3.close()
-    #print MEMORY_LOCATIONS
+    print MEMORY_LOCATIONS
     #print I_CACHE
-    #print INT_REGISTERS
+    print INT_REGISTERS
+    print DATA_MEM
