@@ -1,8 +1,6 @@
 import sys
 from copy import deepcopy
 
-AVAILABLE = 1
-NOT_AVAILABLE = 0
 VALID_INSTRUCTION_SET = ['LW', 'SW', 'L.D', 'S.D', 'DADD','DADDI','DSUB','DSUBI', 'AND', 'ANDI', 'OR', 
                         'ORI', 'LI', 'LUI', 'ADD.D', 'MUL.D', 'DIV.D', 'SUB.D', 'J', 'BEQ', 'BNE', 'HLT']
 CONDITIONAL_BRANCH_INSTRUCTIONS = ['BEQ','BNE']
@@ -26,6 +24,9 @@ INSTRUCTION_UNIT_MAP = {'LW': {'unit':'DATA TRANSFER', 'num_cycles':1},'SW': {'u
                         'MUL.D':{'unit':'FP MULTIPLIER', 'num_cycles':0},'DIV.D':{'unit':'FP DIVIDER', 'num_cycles':0}}
 INT_REGISTERS = [0] * 32
 MEMORY_LOCATIONS = [0] * 32
+I_CACHE_BLOCK_SIZE = 0
+I_CACHE_WORD_SIZE = 0
+I_CACHE = []
 
 def decode_instruction(ins):
     label, ins_str, des, op1, op2, jump_label = None, None, None, None, None, None
@@ -68,23 +69,25 @@ def read_instructions(f1):
     return ins_dict, ins_seq
 
 def init_scoreboard(ins_dict, ins_seq, row_index_units):
+    global I_CACHE_WORD_SIZE
+    global I_CACHE_BLOCK_SIZE
+    global I_CACHE
     scoreboard = [[-1]*8 for _ in range(len(ins_seq))]
     for r in range(len(ins_seq)):
         scoreboard[r][5] = 'N'
         scoreboard[r][6] = 'N'
         scoreboard[r][7] = 'N'
-    #print "Scoreboard:%s" %scoreboard
     functional_unit_status = [['Y']*9 for _ in range(len(row_index_units))]
     for r in range(len(row_index_units)):
         functional_unit_status[r][0] = 'N'
-    #print "Functional Unit Status:%s" %functional_unit_status
     int_register_result_status = [None] * 32
-    #print "Int Register Status:%s" %int_register_result_status
     float_register_result_status = [None] * 32
-    #print "Float Register Status:%s" %float_register_result_status
+    I_CACHE = [[-1]*I_CACHE_WORD_SIZE for _ in range(I_CACHE_BLOCK_SIZE)]
     return scoreboard, functional_unit_status, int_register_result_status, float_register_result_status
 
 def read_config(f2):
+    global I_CACHE_BLOCK_SIZE
+    global I_CACHE_WORD_SIZE
     units = {}
     row_index_units = [] 
     for line in f2:
@@ -94,6 +97,13 @@ def read_config(f2):
             sys.exit()
         num_units = line.split(': ')[1].split(',')[0]
         num_cycles = int(line.split(': ')[1].split(',')[1].split()[0])
+        if unit_name == 'I-CACHE':
+            print 'Found ICache in config..'
+            print num_units
+            print num_cycles
+            I_CACHE_BLOCK_SIZE = int(num_units)
+            I_CACHE_WORD_SIZE = int(num_cycles)
+            print I_CACHE_BLOCK_SIZE, I_CACHE_WORD_SIZE
         if unit_name != 'I-CACHE':
             units.update({unit_name:int(num_units)})
         if unit_name == 'FP ADDER':
@@ -110,6 +120,7 @@ def read_config(f2):
     return units, row_index_units
 
 def read_data(f3):
+    global MEMORY_LOCATIONS
     index = 0
     for line in f3:
         MEMORY_LOCATIONS[index] = int(line, 2)
@@ -173,6 +184,7 @@ def update_output_registers(destination_reg, i_reg_res_status, f_reg_res_status)
         f_reg_res_status[int(destination_reg[1:len(destination_reg)]) - 1] = destination_reg
 
 def read_register(register):
+    global INT_REGISTERS
     if register[0] == 'R':
         val = INT_REGISTERS[int(register[1:len(register)]) - 1]
     elif register[0] == 'F':
@@ -214,7 +226,6 @@ def execute_conditional_branch(instruction):
     op1_val = read_register(instruction['op1'])
     op2_val = read_register(instruction['op2'])
     if instruction['ins_str'] == 'BNE':
-        print "Compare Values:%s %s" %(op1_val,op2_val)
         if op1_val != op2_val:
             return True
     elif instruction['ins_str'] == 'BEQ':
@@ -234,9 +245,12 @@ def read_operands_and_make_expression(instruction):
         exp = store_register(instruction)
     elif instruction['ins_str'] in CONDITIONAL_BRANCH_INSTRUCTIONS:
         exp = execute_conditional_branch(instruction)
+    elif instruction['ins_str'] in UNCONDITIONAL_BRANCH_INSTRUCTIONS:
+        exp = execute_unconditional_branch(instruction)
     return exp
 
 def execute_instruction(instruction):
+    global MEMORY_LOCATIONS
     result = None
     if instruction['ins_str'] in THREE_OPERAND_INSTRUCTIONS:
         if instruction['exp']:
@@ -272,6 +286,7 @@ def execute_instruction(instruction):
     return result
 
 def write_result(instruction):
+    global INT_REGISTERS
     reg = instruction['des']
     if reg[0] == 'R':
         INT_REGISTERS[int(reg[1:len(reg)]) - 1] = instruction['temp_result']
@@ -296,18 +311,19 @@ def clear_output_registers(instruction, int_register_result_status, float_regist
         float_register_result_status[int(des[1:len(des)]) - 1] = None
 
 def handle_branch_result(instruction, instruction_index, output_list, exp, ins_dict, fetch_count):
-    seq_count = instruction['output_count']
     is_branch_taken = False
     loop_start_ins = None
     if exp:
-        print "Branch Satisfied..."
+        #print "Branch Satisfied..."
         f_k = None
         jump_label = instruction['jump_label']
+        #print jump_label
+        #print ins_dict
         for key,val in ins_dict.iteritems():
             if val.get('label') == jump_label:
                 f_k = key
                 break
-        loop_start_ins = ins_dict.get(f_k)
+        loop_start_ins = deepcopy(ins_dict.get(f_k))
         loop_start_ins.update({'stall_lock':False, 'f_unit_index':-1, 'exp': None, 'temp_result': -1, 
             'incomplete_ins': -1, 'output_count': fetch_count, 'state':0, 'clocks':[-1,-1,-1,-1,-1,'N','N','N']})  
         output_list.append(deepcopy(ins_dict.get(instruction_index+1)))
@@ -317,12 +333,31 @@ def handle_branch_result(instruction, instruction_index, output_list, exp, ins_d
         print "Instruction Dict:%s" %(ins_dict)
         ins = ins_dict.get(instruction_index+1)
         ins['stall_lock'] = False
-    return (is_branch_taken, loop_start_ins) 
-        
+    return (is_branch_taken, loop_start_ins)
+
+def check_instruction_cache(instruction_index):
+    global I_CACHE
+    global I_CACHE_BLOCK_SIZE
+    global I_CACHE_WORD_SIZE
+    
+    block_no = (instruction_index / I_CACHE_SIZE) % I_CACHE_BLOCK_SIZE
+    offset = instruction_index % I_CACHE_WORD_SIZE
+
+    if I_CACHE[block_no][offset] == instruction_index:
+        return True
+    else:
+        #Now find starting word addressing
+        start_word_address = instruction_index - (instruction_index % I_CACHE_WORD_SIZE)
+        for i in range(I_CACHE_WORD_SIZE):
+            I_CACHE[block_no][i] = start_word_address
+            start_word_address += 1
+        return False
+ 
 def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_dict, ins_seq, row_index_units): 
-    clock_counter = 2
+    #check_instruction_cache(0,)
+    clock_counter = 1
     incomplete_ins = [ins_dict.get(0)]
-    incomplete_ins[0]['state'] = 0
+    incomplete_ins[0]['state'] = -1
     incomplete_ins[0]['output_count'] = 0
     incomplete_ins[0]['clocks'][0] = 1
     write_ins = []
@@ -330,14 +365,16 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
     fetch_count = 1
     while(True):
         n = len(incomplete_ins)
-        for main_index in range(n):        
+        main_index = 0
+        #for main_index in range(n):
+        while main_index < n:
             instruction = incomplete_ins[main_index]
             instruction_index = find_index_of_current_instruction(ins_seq, instruction['complete_ins'])
             if instruction['state'] == 0 and instruction['stall_lock'] is False:
-                #can it be issed : che)k for structural hazard and WAW hazard
+                #can it be issed : check for structural hazard and WAW hazard
                 unit_index = check_functional_unit_status(instruction['functional_unit'], row_index_units, f_unit_status)
                 if unit_index == -1:
-                    instruction['clocks'][7] = 'Y' 
+                    instruction['clocks'][7] = 'Y'
                 WAW_status = check_for_WAW_hazrd(instruction['des'], i_reg_res_status, f_reg_res_status)
                 if WAW_status:
                     instruction['clocks'][6] = 'Y'
@@ -348,18 +385,33 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
                     instruction['clocks'][1] = clock_counter
                     update_output_registers(instruction['des'], i_reg_res_status, f_reg_res_status)
                     update_functional_unit(unit_index, f_unit_status, instruction, len(row_index_units))
-                    if ins_dict.get(instruction_index+1):
+                    if ins_dict.get(instruction_index+1): 
                         incomplete_ins.append(ins_dict.get(instruction_index+1))
-                        incomplete_ins[-1]['state'] = 0
-                        incomplete_ins[-1]['clocks'][0] = clock_counter
+                        incomplete_ins[-1]['state'] = -1
+                        #incomplete_ins[-1]['clocks'][0] = clock_counter
                         incomplete_ins[-1]['output_count'] = fetch_count
+                        n = n + 1
                         fetch_count += 1
-                        if instruction['ins_str'] in CONDITIONAL_BRANCH_INSTRUCTIONS:
+                        if instruction['ins_str'] in ['BEQ', 'BNE', 'J']:
                             incomplete_ins[-1]['stall_lock'] = True
+                    if instruction['ins_str'] == 'J':
+                        branch_res = handle_branch_result(instruction, instruction_index, output_list, True, ins_dict, fetch_count)
+                        incomplete_ins[-1]['stall_lock'] = False
+                        if branch_res[0]:
+                            branch_res[1]['clocks'][0] = clock_counter + 1
+                            incomplete_ins.append(branch_res[1])
+                            incomplete_ins.pop(main_index+1)
+                        clear_functional_unit(instruction, f_unit_status, len(row_index_units))
+                        incomplete_ins.pop(main_index)
+                        output_list.append(deepcopy(instruction))
+                        break
+            elif instruction['state'] == -1:
+                instruction['state'] = 0
+                instruction['clocks'][0] = clock_counter
             elif instruction['state'] == 1 and instruction['stall_lock'] is False:
                 is_hazard = check_RAW_hazard(instruction, f_unit_status)
                 if is_hazard is False:
-                    print 'Clock Counter is:%s Instruction is:%s' %(clock_counter, instruction['ins_str'])
+                    #print 'Clock Counter is:%s Instruction is:%s' %(clock_counter, instruction['ins_str'])
                     instruction['state'] = 2
                     instruction['clocks'][2] = clock_counter
                     exp = read_operands_and_make_expression(instruction)
@@ -368,7 +420,7 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
                         branch_res = handle_branch_result(instruction, instruction_index, output_list, exp, ins_dict, fetch_count)
                         if branch_res[0]:
                             clock_counter += 1
-                            branch_res[1]['clocks'][0] = clock_counter + 1
+                            branch_res[1]['clocks'][0] = clock_counter
                             incomplete_ins.append(branch_res[1])
                             incomplete_ins.pop(main_index+1)
                         clear_functional_unit(instruction, f_unit_status, len(row_index_units))
@@ -380,6 +432,7 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
             elif instruction['state'] == 2 and instruction['stall_lock'] is False:
                 #Now check if at this current clock counter execution is finished or not
                 if clock_counter - instruction['clocks'][2] == INSTRUCTION_UNIT_MAP.get(instruction['ins_str']).get('num_cycles'):
+                    print "Clock Counter is:%s and Performing sub" %(clock_counter) 
                     if instruction['ins_str'] not in ['CONDITIONAL_BRANCH_INSTRUCTIONS']:
                         instruction['state'] = 3
                         instruction['clocks'][3] = clock_counter
@@ -387,7 +440,9 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
                         instruction['temp_result'] = temp_result
             elif instruction['state'] == 3 and instruction['stall_lock'] is False:
                 instruction['incomplete_index'] = main_index
-                write_ins.append(instruction) 
+                write_ins.append(instruction)
+            main_index = main_index + 1
+
         for instruction in write_ins: 
             instruction_index = find_index_of_current_instruction(ins_seq, instruction['complete_ins'])
             instruction['clocks'][4] = clock_counter
@@ -405,6 +460,8 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
         clock_counter += 1
         if clock_counter == 150:
             break
+    print output_list
+    print fetch_count
     for i in range(0,fetch_count):
         for op in output_list:
             if op and op['output_count'] == i:
@@ -418,14 +475,13 @@ if __name__ == '__main__':
     f2 = open(config_file, "rb")
     f3 = open(data_file, "rb")
     ins_dict, ins_seq = read_instructions(f1)
-    #print "Instructions:%s" %ins_dict
-    #print "Instruction Seq:%s" %ins_seq
     units, row_index_units = read_config(f2)
-    #print "Units are:%s" %units
-    #print "Row Index Units:%s" %row_index_units
     read_data(f3)
     scoreboard, f_unit_status, i_reg_res_status, f_reg_res_status = init_scoreboard(ins_dict, ins_seq, row_index_units)
     generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_dict, ins_seq, row_index_units)
     f1.close()
     f2.close()
     f3.close()
+    #print MEMORY_LOCATIONS
+    #print I_CACHE
+    #print INT_REGISTERS
