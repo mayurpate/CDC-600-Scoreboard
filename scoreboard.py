@@ -246,6 +246,10 @@ def store_register(instruction):
         val1 = read_register(instruction['op1'])
         val2 = read_register(instruction['des'])
         val = "%s##%s" %(val1, val2)
+    elif instruction['ins_str'] == 'S.D':
+        val2 = read_register(instruction['des'])
+        val1 = "0"
+        val = "%s##%s" %(val1, val2)
     return val
 
 def make_expression(v1, v2, instruction):
@@ -309,7 +313,7 @@ def execute_instruction(instruction):
                 result = result << 16
     elif instruction['ins_str'] in STORE_INSTRUCTIONS:
         result = instruction['exp']
-        if instruction['ins_str'] == 'SW':
+        if instruction['ins_str'] in ['SW', 'S.D']:
             #print "Result in Destination SW is;%s" %(result)
             source_val = int(result.split('##')[0])
             des_val = int(result.split('##')[1]) 
@@ -497,6 +501,9 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
     output_list  = []
     fetch_count = 1
     penlety_lock = -1000
+    is_system_bus_available = False
+    bus_acquisition_counter = -1
+    pending_bus_req = False
 
     while(True):
         n = len(incomplete_ins)
@@ -540,8 +547,12 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
                         break
             elif instruction['state'] == -1:
                 if check_instruction_cache(instruction_index) and penlety_lock == -1000:
+                    is_system_bus_available = False
+                    bus_acquisition_counter = clock_counter
                     penlety_lock = prev_ins['clocks'][0] + i_cache_miss_penalty
                 if penlety_lock < clock_counter:
+                    is_system_bus_available = True
+                    bus_acquisition_counter = -1
                     populate_instruction_cache(instruction_index)
                     instruction['state'] = 0
                     instruction['clocks'][0] = clock_counter
@@ -574,23 +585,46 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
                 else:
                     instruction['clocks'][5] = 'Y' 
             elif instruction['state'] == 2 and instruction['stall_lock'] is False:
-                if clock_counter - (instruction['d_cache_miss_penalty'] + instruction['clocks'][2]) == INSTRUCTION_UNIT_MAP.get(instruction['ins_str']).get('num_cycles'):
+                if clock_counter - (instruction['d_cache_miss_penalty'] + instruction['clocks'][2]) == INSTRUCTION_UNIT_MAP.get(instruction['ins_str']).get('num_cycles') or pending_bus_req:
                     if instruction['ins_str'] not in ['CONDITIONAL_BRANCH_INSTRUCTIONS']:
                         temp_result, address = execute_instruction(instruction)
-                        if instruction['ins_str'] in ['LW','L.D'] and address:
-                            if search_in_data_cache(address):
-                                print "Cache Hit for instruction and address:%s %s" %(instruction['complete_ins'], address)
-                                instruction['state'] = 3
-                                instruction['temp_result'] = temp_result
-                                instruction['clocks'][3] = clock_counter
-                            else:
-                                print "Cache Miss for instruction and address:%s %s" %(instruction['complete_ins'], address) 
-                                if instruction['d_cache_miss_penalty'] != 0:
-                                    insert_into_data_cache(address)
+                        if instruction['ins_str'] == 'LW' and address:
+                            if is_system_bus_available is True:
+                                if search_in_data_cache(address):
+                                    print "Cache Hit for instruction and address:%s %s" %(instruction['complete_ins'], address)
                                     instruction['state'] = 3
                                     instruction['temp_result'] = temp_result
                                     instruction['clocks'][3] = clock_counter
-                                instruction['d_cache_miss_penalty'] = 14 - INSTRUCTION_UNIT_MAP.get(instruction['ins_str']).get('num_cycles')
+                                else:
+                                    insert_into_data_cache(address)
+                                    print "Cache Miss for instruction and address:%s %s" %(instruction['complete_ins'], address)
+                                    instruction['d_cache_miss_penalty'] += 12
+                            else:
+                                pending_bus_req = True
+                                instruction['d_cache_miss_penalty'] = 12
+                        elif instruction['ins_str'] == 'L.D' and address:
+                            if is_system_bus_available is True:
+                                pending_bus_req = False
+                                if search_in_data_cache(address):
+                                    if search_in_data_cache(address + 4):
+                                        print "Cache Hit for instruction and address:%s %s" %(instruction['complete_ins'], address)
+                                        instruction['state'] = 3
+                                        instruction['temp_result'] = temp_result
+                                        instruction['clocks'][3] = clock_counter
+                                    else:
+                                        insert_into_data_cache(address+4)
+                                        instruction['d_cache_miss_penalty'] += 12
+                                else:
+                                    insert_into_data_cache(address)
+                                    if search_in_data_cache(address + 4):
+                                        instruction['d_cache_miss_penalty'] += 12
+                                    else:
+                                        #insert_into_data_cache(address)
+                                        insert_into_data_cache(address + 4)
+                                        instruction['d_cache_miss_penalty'] += 24
+                            else:
+                                pending_bus_req = True
+                                instruction['d_cache_miss_penalty'] = 11
                         else:
                             instruction['state'] = 3
                             instruction['temp_result'] = temp_result
@@ -617,7 +651,7 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
             instruction['incomplete_index'] = -1
         write_ins = []
         clock_counter += 1
-        if clock_counter == 200:
+        if clock_counter == 500:
             break
     
     for i in range(0,fetch_count):
@@ -643,7 +677,7 @@ if __name__ == '__main__':
     #print MEMORY_LOCATIONS
     #print I_CACHE
     #print INT_REGISTERS
-    #print DATA_MEM
+    print DATA_MEM
 
     '''
     insert_into_data_cache(256)
