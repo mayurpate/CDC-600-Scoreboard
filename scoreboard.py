@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import sys
 from copy import deepcopy
 
@@ -70,7 +71,10 @@ def read_instructions(f1):
         #print line
         ins = line.split()
         #print ins
-        label, ins_str, des, op1, op2, jump_label, displacement = decode_instruction(ins)
+        if 'HLT' in ins:
+            label, ins_str, des, op1, op2, jump_label, displacement = None, 'HLT', None, None, None, None, None
+        else:
+            label, ins_str, des, op1, op2, jump_label, displacement = decode_instruction(ins)
         ins_dict.update({cnt:{'label': label,'ins_str': ins_str,'des': des,
                     'displacement': displacement,
                     'op1':op1, 'op2':op2, 'jump_label':jump_label, 'state': -1,
@@ -489,10 +493,10 @@ def search_in_data_cache(address):
         #insert_into_data_cache(address)
     return False
 
-def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_dict, ins_seq, row_index_units): 
+def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_dict, ins_seq, row_index_units, f4): 
     i_cache_miss_penalty = 3 * I_CACHE_WORD_SIZE
     populate_instruction_cache(0)
-    clock_counter = 13
+    clock_counter = 3 * I_CACHE_WORD_SIZE + 1
     incomplete_ins = [ins_dict.get(0)]
     incomplete_ins[0]['state'] = -1
     incomplete_ins[0]['output_count'] = 0
@@ -503,11 +507,24 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
     penlety_lock = -1000
     is_system_bus_available = False
     bus_acquisition_counter = -1
+    bus_release_time = -1
     pending_bus_req = False
+    terminate_scoreboard = False
+    previous_ins = None
+    i_cache_miss_count = 1
+    i_cache_access_count = 0
+    d_cache_access_count = 0
+    d_cache_miss_count = 0
 
     while(True):
         n = len(incomplete_ins)
         main_index = 0
+        if len(incomplete_ins) == 2:
+            if incomplete_ins[0]['ins_str'] == 'HLT' and incomplete_ins[1]['ins_str'] == 'HLT':
+                if incomplete_ins[0]['clocks'][1] != -1 and incomplete_ins[1]['clocks'][0] != -1:
+                    output_list.append(incomplete_ins[0])
+                    output_list.append(incomplete_ins[1])
+                    break
         while main_index < n:
             instruction = incomplete_ins[main_index]
             instruction_index = find_index_of_current_instruction(ins_seq, instruction['complete_ins'])
@@ -547,10 +564,17 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
                         break
             elif instruction['state'] == -1:
                 if check_instruction_cache(instruction_index) and penlety_lock == -1000:
+                    i_cache_miss_count += 1
                     is_system_bus_available = False
-                    bus_acquisition_counter = clock_counter
+                    bus_release_time = clock_counter + i_cache_miss_penalty
+                    #bus_acquisition_counter = clock_counter 
                     penlety_lock = prev_ins['clocks'][0] + i_cache_miss_penalty
                 if penlety_lock < clock_counter:
+                    i_cache_access_count += 1
+                    if instruction['ins_str'] in ['L.D','S.D']:
+                        d_cache_access_count += 2
+                    elif instruction['ins_str'] in ['LW','SW']:
+                        d_cache_access_count += 1 
                     is_system_bus_available = True
                     bus_acquisition_counter = -1
                     populate_instruction_cache(instruction_index)
@@ -590,18 +614,24 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
                         temp_result, address = execute_instruction(instruction)
                         if instruction['ins_str'] == 'LW' and address:
                             if is_system_bus_available is True:
+                                pending_bus_req = False
                                 if search_in_data_cache(address):
                                     print "Cache Hit for instruction and address:%s %s" %(instruction['complete_ins'], address)
                                     instruction['state'] = 3
                                     instruction['temp_result'] = temp_result
                                     instruction['clocks'][3] = clock_counter
                                 else:
+                                    d_cache_miss_count += 1
                                     insert_into_data_cache(address)
                                     print "Cache Miss for instruction and address:%s %s" %(instruction['complete_ins'], address)
                                     instruction['d_cache_miss_penalty'] += 12
                             else:
                                 pending_bus_req = True
-                                instruction['d_cache_miss_penalty'] = 12
+                                if clock_counter == bus_release_time:
+                                    bus_release_time = -1
+                                    actual_cycle_count = clock_counter + 12 + INSTRUCTION_UNIT_MAP.get(instruction['ins_str']).get('num_cycles') -1
+                                    x = actual_cycle_count - (INSTRUCTION_UNIT_MAP.get(instruction['ins_str']).get('num_cycles') + instruction['clocks'][2])
+                                    instruction['d_cache_miss_penalty'] = x - 12
                         elif instruction['ins_str'] == 'L.D' and address:
                             if is_system_bus_available is True:
                                 pending_bus_req = False
@@ -612,19 +642,27 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
                                         instruction['temp_result'] = temp_result
                                         instruction['clocks'][3] = clock_counter
                                     else:
+                                        d_cache_miss_count += 1
                                         insert_into_data_cache(address+4)
                                         instruction['d_cache_miss_penalty'] += 12
                                 else:
+                                    d_cache_miss_count += 1
                                     insert_into_data_cache(address)
                                     if search_in_data_cache(address + 4):
                                         instruction['d_cache_miss_penalty'] += 12
                                     else:
+                                        d_cache_miss_count += 1
                                         #insert_into_data_cache(address)
                                         insert_into_data_cache(address + 4)
                                         instruction['d_cache_miss_penalty'] += 24
                             else:
                                 pending_bus_req = True
-                                instruction['d_cache_miss_penalty'] = 11
+                                if clock_counter == bus_release_time:
+                                    bus_release_time = -1
+                                    actual_cycle_count = clock_counter + 12 + INSTRUCTION_UNIT_MAP.get(instruction['ins_str']).get('num_cycles') -1
+                                    x = actual_cycle_count - (INSTRUCTION_UNIT_MAP.get(instruction['ins_str']).get('num_cycles') + instruction['clocks'][2])
+                                    instruction['d_cache_miss_penalty'] = x - 12
+                                #instruction['d_cache_miss_penalty'] = 11
                         else:
                             instruction['state'] = 3
                             instruction['temp_result'] = temp_result
@@ -651,50 +689,51 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
             instruction['incomplete_index'] = -1
         write_ins = []
         clock_counter += 1
-        if clock_counter == 500:
-            break
-    
+    #print output_list
+    #print fetch_count
+    op_list = []
+    s = "%-20s %-5s %-5s %-5s %-5s %-5s %-5s %-5s %-5s\n" %('Instruction','Fetch', 'Issue','Read','Exec','Write','RAW','WAW','Struct')
+    f4.write(s)
     for i in range(0,fetch_count):
         for op in output_list:
             if op and op['output_count'] == i:
                 print "%s\t%s" %(op['complete_ins'], op['clocks'])
+                for index,i in enumerate(op['clocks']):
+                    if i == -1:
+                        op['clocks'][index] = ''
+                op_list.append("%-20s %-5s %-5s %-5s %-5s %-5s %-5s %-5s %-5s\n" %(op['complete_ins'],op['clocks'][0],op['clocks'][1],op['clocks'][2],op['clocks'][3], op['clocks'][4], op['clocks'][5], op['clocks'][6],op['clocks'][7]))
+    max_width = max(len(op) for op in op_list)
+    for op in op_list:
+        f4.write(op)
+    print "Total Number of access requsts for instruction cahce:%s" %(i_cache_access_count)
+    f4.write("\n\nTotal Number of access requsts for instruction cahce:%s" %(i_cache_access_count))
+    print "Number of instruction cahce hits:%s" %(i_cache_access_count - i_cache_miss_count)
+    f4.write("\n\nNumber of instruction cahce hits:%s" %(i_cache_access_count - i_cache_miss_count))
+    print "Total Number of Cache requsts for Data Cache:%s" %(d_cache_access_count)
+    f4.write("\n\nTotal Number of Cache requsts for Data Cache:%s" %(d_cache_access_count))
+    print "Total Number of Cache Hits for Data Cache:%s" %(d_cache_access_count - d_cache_miss_count)
+    f4.write("\n\nTotal Number of Cache Hits for Data Cache:%s" %(d_cache_access_count - d_cache_miss_count))
+
 
 if __name__ == '__main__':
+    if len(sys.argv) != 5:
+        print "Usage: python inst.txt data.txt config.txt result.txt"
+        sys.exit(0)
     inst_file = sys.argv[1]
-    config_file = sys.argv[2]
-    data_file = sys.argv[3]
+    data_file = sys.argv[2]
+    config_file = sys.argv[3]
+    result_file = sys.argv[4]
     f1 = open(inst_file, "rb")
     f2 = open(config_file, "rb")
     f3 = open(data_file, "rb")
+    f4 = open(result_file, "wb")
     ins_dict, ins_seq = read_instructions(f1)
     units, row_index_units = read_config(f2)
     read_data(f3)
     scoreboard, f_unit_status, i_reg_res_status, f_reg_res_status = init_scoreboard(ins_dict, ins_seq, row_index_units)
-    generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_dict, ins_seq, row_index_units)
+    generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_dict, ins_seq, row_index_units, f4)
     f1.close()
     f2.close()
     f3.close()
-    #print MEMORY_LOCATIONS
-    #print I_CACHE
-    #print INT_REGISTERS
-    print DATA_MEM
+    f4.close()
 
-    '''
-    insert_into_data_cache(256)
-    insert_into_data_cache(364)
-    
-    insert_into_data_cache(340)
-    insert_into_data_cache(368)
-
-
-    print "Before Replacement..." 
-    print SET0_CACHE
-    print SET1_CACHE
-    
-    f = search_in_data_cache(272)
-    print f
-
-    print "After Replacement..." 
-    print SET0_CACHE
-    print SET1_CACHE
-    '''
