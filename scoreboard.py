@@ -25,6 +25,8 @@ INSTRUCTION_UNIT_MAP = {'LW': {'unit':'DATA TRANSFER', 'num_cycles':1},'SW': {'u
 INT_REGISTERS = [0] * 32
 MEMORY_LOCATIONS = [0] * 32
 DATA_MEM = {}
+SET0_CACHE = {'latest_block_index':0, 'blocks': [{},{}]}
+SET1_CACHE ={'latest_block_index':0, 'blocks': [{},{}]}
 I_CACHE_BLOCK_SIZE = 0
 I_CACHE_WORD_SIZE = 0
 I_CACHE = []
@@ -65,9 +67,9 @@ def read_instructions(f1):
     ins_dict = {}
     cnt = 0
     for line in f1:
-        print line
+        #print line
         ins = line.split()
-        print ins
+        #print ins
         label, ins_str, des, op1, op2, jump_label, displacement = decode_instruction(ins)
         ins_dict.update({cnt:{'label': label,'ins_str': ins_str,'des': des,
                     'displacement': displacement,
@@ -76,7 +78,7 @@ def read_instructions(f1):
                     'functional_unit': INSTRUCTION_UNIT_MAP.get(ins_str).get('unit'),
                     'f_unit_index':-1, 'exp':None, 'temp_result': -1, 'incomplete_index':-1,
                     'output_count':0, 'clocks':[-1,-1,-1,-1,-1,'N','N','N'],
-                    'branch_next_ins': False}})
+                    'branch_next_ins': False, 'd_cache_miss_penalty':0}})
         cnt += 1
         ins_seq.append(line.split('\n')[0])
     return ins_dict, ins_seq
@@ -85,6 +87,9 @@ def init_scoreboard(ins_dict, ins_seq, row_index_units):
     global I_CACHE_WORD_SIZE
     global I_CACHE_BLOCK_SIZE
     global I_CACHE
+    global SET0_CACHE
+    global SET1_CACHE
+
     scoreboard = [[-1]*8 for _ in range(len(ins_seq))]
     for r in range(len(ins_seq)):
         scoreboard[r][5] = 'N'
@@ -96,6 +101,10 @@ def init_scoreboard(ins_dict, ins_seq, row_index_units):
     int_register_result_status = [None] * 32
     float_register_result_status = [None] * 32
     I_CACHE = [[-1]*I_CACHE_WORD_SIZE for _ in range(I_CACHE_BLOCK_SIZE)]
+    for x in SET0_CACHE.get('blocks'):
+        x.update({'addresses':[], 'values':{}})
+    for x in SET1_CACHE.get('blocks'):
+        x.update({'addresses':[], 'values':{}})
     return scoreboard, functional_unit_status, int_register_result_status, float_register_result_status
 
 def read_config(f2):
@@ -202,7 +211,7 @@ def read_register(register):
         val = INT_REGISTERS[int(register[1:len(register)]) - 1]
     elif register[0] == 'F':
         val = 0
-    print "Register is:%s and val is;%s" %(register, val)
+    #print "Register is:%s and val is;%s" %(register, val)
     return val
 
 def extract_values(instruction):
@@ -220,7 +229,7 @@ def extract_values(instruction):
 
 def load_register(instruction):
     val = None
-    if instruction['ins_str'] == 'LW':
+    if instruction['ins_str'] in ['LW','L.D']:
         base_register = instruction['op1']
         #print "Base Register:%s" %base_register
         #val = read_register(base_register) - 256
@@ -262,7 +271,7 @@ def read_operands_and_make_expression(instruction):
             exp = make_expression(v1, v2, instruction)
     elif instruction['ins_str'] in LOAD_INSTRUCTIONS:
         exp = load_register(instruction)
-        print "Instruction is:%s and exp is;%s" %(instruction['complete_ins'], exp)
+        #print "Instruction is:%s and exp is;%s" %(instruction['complete_ins'], exp)
     elif instruction['ins_str'] in STORE_INSTRUCTIONS:
         exp = store_register(instruction)
     elif instruction['ins_str'] in CONDITIONAL_BRANCH_INSTRUCTIONS:
@@ -275,21 +284,20 @@ def execute_instruction(instruction):
     global MEMORY_LOCATIONS
     global DATA_MEM
     #print MEMORY_LOCATIONS
-    result = None
+    result, address = None, None
     if instruction['ins_str'] in THREE_OPERAND_INSTRUCTIONS:
         if instruction['exp']:
             result = eval(instruction['exp'])
     elif instruction['ins_str'] in LOAD_INSTRUCTIONS:
         res = instruction['exp']
         #print "Instruction is:%s and result is;%s" %(instruction['complete_ins'], res)
-        if instruction['ins_str'] == 'LW':
+        if instruction['ins_str'] in ['LW','L.D']:
             displacement = instruction['displacement']
             base_value = res
             if (displacement + base_value) > 380:
                 print "Accessing Out of Memory Data.."
                 sys.exit(0)
-            #print "Displacement is:%s and base value is;%s" %(displacement, base_value)
-            #result = MEMORY_LOCATIONS[displacement + base_value]
+            address = displacement + base_value
             result = DATA_MEM[displacement + base_value]
         elif instruction['ins_str'] == 'LI':
             if res is not None:
@@ -302,7 +310,7 @@ def execute_instruction(instruction):
     elif instruction['ins_str'] in STORE_INSTRUCTIONS:
         result = instruction['exp']
         if instruction['ins_str'] == 'SW':
-            print "Result in Destination SW is;%s" %(result)
+            #print "Result in Destination SW is;%s" %(result)
             source_val = int(result.split('##')[0])
             des_val = int(result.split('##')[1]) 
             displacement = instruction['displacement']
@@ -313,13 +321,13 @@ def execute_instruction(instruction):
             DATA_MEM[des_val + displacement] = source_val
     elif instruction['ins_str'] in CONDITIONAL_BRANCH_INSTRUCTIONS:
         pass
-    return result
+    return result, address
 
 def write_result(instruction):
     #print "Instruction is:%s and result in write is:%s" %(instruction['complete_ins'], instruction['temp_result'])
     global INT_REGISTERS
     reg = instruction['des']
-    print "Instruction is %s and destination is %s" %(instruction['complete_ins'], reg)
+    #print "Instruction is %s and destination is %s" %(instruction['complete_ins'], reg)
     if reg[0] == 'R' and instruction['temp_result'] is not None:
         INT_REGISTERS[int(reg[1:len(reg)]) - 1] = instruction['temp_result']
         
@@ -391,7 +399,92 @@ def check_instruction_cache(instruction_index):
         return False
     else:
         return True
- 
+
+def calculate_set_no(address):
+    return (((address / 4) / 4) % 2)
+
+def insert_into_data_cache(address):
+    global SET0_CACHE
+    global SET1_CACHE
+    global DATA_MEM
+
+    oldest_block = 0
+    is_empty_block_found = False
+    set_no = calculate_set_no(address)
+    start_word_address = address - (address % 16)
+    if set_no == 0:
+        for index, block in enumerate(SET0_CACHE.get('blocks')):
+            if not block.get('addresses'):
+                is_empty_block_found = True
+                for b in range(4):
+                    block['addresses'].append(start_word_address)
+                    block['values'].update({start_word_address:DATA_MEM.get(start_word_address)})
+                    start_word_address += 4
+                SET0_CACHE['latest_block_index'] = index
+                break
+        if not is_empty_block_found:
+            if SET0_CACHE['latest_block_index'] == 0:
+                oldest_block = 1
+            else:
+                oldest_block = 0
+            #Now Replace oldest block
+            SET0_CACHE['blocks'][oldest_block]['addresses'] = []
+            SET0_CACHE['blocks'][oldest_block]['values'] = {}
+            for b in range(4):
+                SET0_CACHE['blocks'][oldest_block]['addresses'].append(start_word_address)
+                SET0_CACHE['blocks'][oldest_block]['values'].update({start_word_address:DATA_MEM.get(start_word_address)})
+                start_word_address += 4
+            SET0_CACHE['latest_block_index'] = oldest_block
+    elif set_no == 1: 
+        for index, block in enumerate(SET1_CACHE.get('blocks')):
+            if not block.get('addresses'):
+                is_empty_block_found = True
+                for b in range(4):
+                    block['addresses'].append(start_word_address)
+                    block['values'].update({start_word_address:DATA_MEM.get(start_word_address)})
+                    start_word_address += 4
+                SET1_CACHE['latest_block_index'] = index
+                break
+        if not is_empty_block_found:
+            if SET1_CACHE['latest_block_index'] == 0:
+                oldest_block = 1
+            else:
+                oldest_block = 0
+            #Now Replace oldest block
+            SET1_CACHE['blocks'][oldest_block]['addresses'] = []
+            SET1_CACHE['blocks'][oldest_block]['values'] = {}
+            for b in range(4):
+                SET1_CACHE['blocks'][oldest_block]['addresses'].append(start_word_address)
+                SET1_CACHE['blocks'][oldest_block]['values'].update({start_word_address:DATA_MEM.get(start_word_address)})
+                start_word_address += 4
+            SET1_CACHE['latest_block_index'] = oldest_block
+
+def search_in_data_cache(address):
+    global SET0_CACHE
+    global SET1_CACHE
+    global DATA_MEM
+    is_found = True
+    set_no = calculate_set_no(address)
+    if set_no == 0: 
+        for index, block in enumerate(SET0_CACHE.get('blocks')):
+            if address in block['addresses']:
+                #Cache hit - No Penalty
+                SET0_CACHE['latest_block_index'] = index
+                return is_found
+
+        #Following call may be shifted in giant loop for proper cycle counting
+        #insert_into_data_cache(address)     
+    elif set_no == 1: 
+        for index, block in enumerate(SET1_CACHE.get('blocks')):
+            if address in block['addresses']:
+                #Cache hit - No Penalty
+                SET1_CACHE['latest_block_index'] = index
+                return is_found
+
+        #Following call may be shifted in giant loop for proper cycle counting
+        #insert_into_data_cache(address)
+    return False
+
 def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_dict, ins_seq, row_index_units): 
     i_cache_miss_penalty = 3 * I_CACHE_WORD_SIZE
     populate_instruction_cache(0)
@@ -404,6 +497,7 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
     output_list  = []
     fetch_count = 1
     penlety_lock = -1000
+
     while(True):
         n = len(incomplete_ins)
         main_index = 0
@@ -411,7 +505,6 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
             instruction = incomplete_ins[main_index]
             instruction_index = find_index_of_current_instruction(ins_seq, instruction['complete_ins'])
             if instruction['state'] == 0 and instruction['stall_lock'] is False:
-                #can it be issed : check for structural hazard and WAW hazard
                 unit_index = check_functional_unit_status(instruction['functional_unit'], row_index_units, f_unit_status)
                 if unit_index == -1:
                     instruction['clocks'][7] = 'Y'
@@ -419,7 +512,6 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
                 if WAW_status:
                     instruction['clocks'][6] = 'Y'
                 if WAW_status is False and unit_index != -1:
-                    #Issue the instruction
                     instruction['state'] = 1
                     instruction['f_unit_index'] = unit_index
                     instruction['clocks'][1] = clock_counter
@@ -448,10 +540,8 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
                         break
             elif instruction['state'] == -1:
                 if check_instruction_cache(instruction_index) and penlety_lock == -1000:
-                    #print "Cache Miss Occured for instruction:%s" %(instruction['complete_ins']) 
                     penlety_lock = prev_ins['clocks'][0] + i_cache_miss_penalty
                 if penlety_lock < clock_counter:
-                    #print "Lock Removed at clock_counter:%s and instructions are:%s" %(clock_counter, incomplete_ins)
                     populate_instruction_cache(instruction_index)
                     instruction['state'] = 0
                     instruction['clocks'][0] = clock_counter
@@ -465,7 +555,6 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
             elif instruction['state'] == 1 and instruction['stall_lock'] is False:
                 is_hazard = check_RAW_hazard(instruction, f_unit_status)
                 if is_hazard is False:
-                    #print 'Clock Counter is:%s Instruction is:%s' %(clock_counter, instruction['ins_str'])
                     instruction['state'] = 2
                     instruction['clocks'][2] = clock_counter
                     exp = read_operands_and_make_expression(instruction)
@@ -481,20 +570,31 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
                         clear_functional_unit(instruction, f_unit_status, len(row_index_units))
                         incomplete_ins.pop(main_index)
                         output_list.append(deepcopy(instruction))
-                        #if clock_counter == 175:
-                        #print "Instructions at Clock Counter %s:%s" %(clock_counter,incomplete_ins)
                         break
                 else:
                     instruction['clocks'][5] = 'Y' 
             elif instruction['state'] == 2 and instruction['stall_lock'] is False:
-                #Now check if at this current clock counter execution is finished or not
-                if clock_counter - instruction['clocks'][2] == INSTRUCTION_UNIT_MAP.get(instruction['ins_str']).get('num_cycles'):
-                    #print "Clock Counter is:%s and Performing sub" %(clock_counter) 
+                if clock_counter - (instruction['d_cache_miss_penalty'] + instruction['clocks'][2]) == INSTRUCTION_UNIT_MAP.get(instruction['ins_str']).get('num_cycles'):
                     if instruction['ins_str'] not in ['CONDITIONAL_BRANCH_INSTRUCTIONS']:
-                        instruction['state'] = 3
-                        instruction['clocks'][3] = clock_counter
-                        temp_result = execute_instruction(instruction)
-                        instruction['temp_result'] = temp_result
+                        temp_result, address = execute_instruction(instruction)
+                        if instruction['ins_str'] in ['LW','L.D'] and address:
+                            if search_in_data_cache(address):
+                                print "Cache Hit for instruction and address:%s %s" %(instruction['complete_ins'], address)
+                                instruction['state'] = 3
+                                instruction['temp_result'] = temp_result
+                                instruction['clocks'][3] = clock_counter
+                            else:
+                                print "Cache Miss for instruction and address:%s %s" %(instruction['complete_ins'], address) 
+                                if instruction['d_cache_miss_penalty'] != 0:
+                                    insert_into_data_cache(address)
+                                    instruction['state'] = 3
+                                    instruction['temp_result'] = temp_result
+                                    instruction['clocks'][3] = clock_counter
+                                instruction['d_cache_miss_penalty'] = 14 - INSTRUCTION_UNIT_MAP.get(instruction['ins_str']).get('num_cycles')
+                        else:
+                            instruction['state'] = 3
+                            instruction['temp_result'] = temp_result
+                            instruction['clocks'][3] = clock_counter
             elif instruction['state'] == 3 and instruction['stall_lock'] is False:
                 instruction['incomplete_index'] = main_index
                 write_ins.append(instruction)
@@ -510,6 +610,7 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
             output_list.append(deepcopy(instruction))
             instruction['state'] = 4
             instruction['f_unit_index'] = -1
+            instruction['d_cache_miss_penalty'] = 0
             instruction['exp'] = None
             instruction['temp_result'] = None
             incomplete_ins.pop(instruction['incomplete_index'])
@@ -518,8 +619,7 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
         clock_counter += 1
         if clock_counter == 200:
             break
-    #print output_list
-    #print fetch_count
+    
     for i in range(0,fetch_count):
         for op in output_list:
             if op and op['output_count'] == i:
@@ -540,7 +640,27 @@ if __name__ == '__main__':
     f1.close()
     f2.close()
     f3.close()
-    print MEMORY_LOCATIONS
+    #print MEMORY_LOCATIONS
     #print I_CACHE
-    print INT_REGISTERS
-    print DATA_MEM
+    #print INT_REGISTERS
+    #print DATA_MEM
+
+    '''
+    insert_into_data_cache(256)
+    insert_into_data_cache(364)
+    
+    insert_into_data_cache(340)
+    insert_into_data_cache(368)
+
+
+    print "Before Replacement..." 
+    print SET0_CACHE
+    print SET1_CACHE
+    
+    f = search_in_data_cache(272)
+    print f
+
+    print "After Replacement..." 
+    print SET0_CACHE
+    print SET1_CACHE
+    '''
