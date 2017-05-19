@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import sys
 from copy import deepcopy
+import pdb
 
 VALID_INSTRUCTION_SET = ['LW', 'SW', 'L.D', 'S.D', 'DADD','DADDI','DSUB','DSUBI', 'AND', 'ANDI', 'OR', 
                         'ORI', 'LI', 'LUI', 'ADD.D', 'MUL.D', 'DIV.D', 'SUB.D', 'J', 'BEQ', 'BNE', 'HLT']
@@ -179,6 +180,8 @@ def check_for_WAW_hazrd(destination_reg, int_reg_res_status, float_reg_res_statu
     return False
 
 def update_functional_unit(unit_index, f_unit_status, instruction, num_rows):
+    if instruction['ins_str'] in ['S.D', 'SW']:
+        print instruction
     f_unit_status[unit_index][0] = 'Y'
     f_unit_status[unit_index][1] = instruction['ins_str']
     f_unit_status[unit_index][2] = instruction['des']
@@ -189,12 +192,18 @@ def update_functional_unit(unit_index, f_unit_status, instruction, num_rows):
     if instruction['op1']:
         for r in range(num_rows):
             if r != unit_index and instruction['op1'] == f_unit_status[r][2]:
-                f_unit_status[unit_index][7] = 'N'
+                if f_unit_status[r][1] in ['S.D', 'SW']:
+                    f_unit_status[unit_index][7] = 'Y'
+                else:
+                    f_unit_status[unit_index][7] = 'N'
                 break
     if instruction['op2']:
         for r in range(num_rows):
             if r != unit_index and instruction['op2'] == f_unit_status[r][2]:
-                f_unit_status[unit_index][8] = 'N'
+                if f_unit_status[r][1] in ['S.D', 'SW']:
+                    f_unit_status[unit_index][8] = 'Y'
+                else:
+                    f_unit_status[unit_index][8] = 'N'
                 break
 
 def check_RAW_hazard(instruction, f_unit_status):
@@ -518,6 +527,11 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
     d_cache_miss_count = 0
 
     while(True):
+        '''
+        if clock_counter == 161:
+            pdb.set_trace()
+            #break
+        '''
         n = len(incomplete_ins)
         main_index = 0
         if len(incomplete_ins) == 2:
@@ -526,8 +540,6 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
                     output_list.append(incomplete_ins[0])
                     output_list.append(incomplete_ins[1])
                     break
-        if clock_counter == 128:
-            print "Incomplete list:%s" %(incomplete_ins)
         while main_index < n:
             instruction = incomplete_ins[main_index]
             instruction_index = find_index_of_current_instruction(ins_seq, instruction['complete_ins'])
@@ -599,7 +611,8 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
                     exp = read_operands_and_make_expression(instruction)
                     instruction['exp'] = exp
                     if instruction['ins_str'] in CONDITIONAL_BRANCH_INSTRUCTIONS:
-                        branch_res = handle_branch_result(instruction, instruction_index, output_list, exp, ins_dict, fetch_count)
+                        branch_res = handle_branch_result(instruction, instruction_index, output_list, exp, ins_dict, fetch_count) 
+                        incomplete_ins[-1]['stall_lock'] = False
                         if branch_res[0]:
                             clock_counter += 1
                             #branch_res[1]['clocks'][0] = clock_counter
@@ -678,8 +691,13 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
                 instruction['incomplete_index'] = main_index
                 write_ins.append(instruction)
             main_index = main_index + 1
-
-        for instruction in write_ins: 
+        
+        pop_index = []
+        for instruction in write_ins:
+            '''
+            if clock_counter == 98:
+                pdb.set_trace()
+            '''
             instruction_index = find_index_of_current_instruction(ins_seq, instruction['complete_ins'])
             instruction['clocks'][4] = clock_counter
             if instruction['ins_str'] not in ['SW', 'S.D']:
@@ -692,8 +710,15 @@ def generate_scoreboard(f_unit_status, i_reg_res_status, f_reg_res_status, ins_d
             instruction['d_cache_miss_penalty'] = 0
             instruction['exp'] = None
             instruction['temp_result'] = None
-            incomplete_ins.pop(instruction['incomplete_index'])
-            instruction['incomplete_index'] = -1
+            #incomplete_ins.pop(instruction['incomplete_index'])
+            pop_index.append(instruction['incomplete_index'])
+            #instruction['incomplete_index'] = -1
+        old_ins = []
+        for instruction in incomplete_ins:
+            if instruction['incomplete_index'] not in pop_index:
+                old_ins.append(instruction)
+        incomplete_ins = []
+        incomplete_ins = deepcopy(old_ins)
         write_ins = []
         clock_counter += 1
     op_list = []
