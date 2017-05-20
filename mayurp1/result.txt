@@ -1,43 +1,43 @@
 Instruction          Fetch Issue Read  Exec  Write RAW   WAW   Struct
-LI R1, 16            1     2     3     4     5     N     N     N    
- LI R2, 296          2     6     7     8     9     N     N     Y    
- LI R4, 256          6     10    11    12    13    N     N     Y    
-QQ: LW R3, 0(R4)     10    11    14    15    16    Y     N     N    
- L.D F1, 32(R4)      11    17    18    20    21    N     N     Y    
- L.D F2, 64(R4)      17    22    23    25    26    N     N     Y    
- ADD.D F4, F1, F2    22    23    27    29    30    Y     N     N    
- SUB.D F5, F2, F1    23    24    27    29    30    Y     N     N    
- MUL.D F6, F1, F5    24    25    31    61    62    Y     N     N    
- DADD R4, R2, R1     25    26    27    28    29    N     N     N    
- DSUBI R1, R1, 8     26    30    31    32    33    N     N     Y    
- ADD.D F7, F2, F6    30    31    63    65    66    Y     N     N    
- ADD.D F6, F1, F7    31    63    67    69    70    Y     Y     N    
- SW R4, -24(R2)      63    64    65    66    67    N     N     N    
- S.D F7, 32(R4)      64    68    69    71    71    N     N     Y    
- BNE R1, R3, QQ      68    69    70                N     N     N    
- SW R2, 0(R4)        69                            N     N     N    
-QQ: LW R3, 0(R4)     71    72    73    74    75    N     N     N    
- L.D F1, 32(R4)      72    76    77    79    80    N     N     Y    
- L.D F2, 64(R4)      76    81    82    84    85    N     N     Y    
- ADD.D F4, F1, F2    81    82    86    88    89    Y     N     N    
- SUB.D F5, F2, F1    82    83    86    88    89    Y     N     N    
- MUL.D F6, F1, F5    83    84    90    120   121   Y     N     N    
- DADD R4, R2, R1     84    85    86    87    88    N     N     N    
- DSUBI R1, R1, 8     85    89    90    91    92    N     N     Y    
- ADD.D F7, F2, F6    89    90    122   124   125   Y     N     N    
- ADD.D F6, F1, F7    90    122   126   128   129   Y     Y     N    
- SW R4, -24(R2)      122   123   124   125   126   N     N     N    
- S.D F7, 32(R4)      123   127   128   130   131   N     N     Y    
- BNE R1, R3, QQ      127   128   129               N     N     N    
- SW R2, 0(R4)        128   132   133   134   135   N     Y     Y    
- HLT                 132   133   134               N     N     N    
- HLT                 133                           N     N     Y    
+LI R1, 16            13    14    15    16    17    N     N     N    
+ LI R2, 296          14    18    19    20    21    N     N     Y    
+ LI R4, 256          18    22    23    24    25    N     N     Y    
+QQ: LW R3, 0(R4)     22    23    26    48    49    Y     N     N    
+ L.D F1, 32(R4)      35    50    51    65    66    N     N     Y    
+ L.D F2, 64(R4)      50    67    68    94    95    N     N     Y    
+ ADD.D F4, F1, F2    67    68    96    98    99    Y     N     N    
+ SUB.D F5, F2, F1    68    69    96    98    99    Y     N     N    
+ MUL.D F6, F1, F5    81    82    100   130   131   Y     N     N    
+ DADD R4, R2, R1     82    83    84    85    86    N     N     N    
+ DSUBI R1, R1, 8     83    87    88    89    90    N     N     Y    
+ ADD.D F7, F2, F6    87    100   132   134   135   Y     N     Y    
+ ADD.D F6, F1, F7    106   132   136   138   139   Y     Y     N    
+ SW R4, -24(R2)      132   133   134   147   148   N     N     N    
+ S.D F7, 32(R4)      133   149   150   175   176   N     N     Y    
+ BNE R1, R3, QQ      149   150   151               N     N     N    
+ SW R2, 0(R4)        162                           N     N     N    
+QQ: LW R3, 0(R4)     187   188   189   202   203   N     N     N    
+ L.D F1, 32(R4)      188   204   205   207   208   N     N     Y    
+ L.D F2, 64(R4)      204   209   210   224   225   N     N     Y    
+ ADD.D F4, F1, F2    209   210   226   228   229   Y     N     N    
+ SUB.D F5, F2, F1    210   211   226   228   229   Y     N     N    
+ MUL.D F6, F1, F5    211   212   230   260   261   Y     N     N    
+ DADD R4, R2, R1     212   213   214   215   216   N     N     N    
+ DSUBI R1, R1, 8     213   217   218   219   220   N     N     Y    
+ ADD.D F7, F2, F6    217   230   262   264   265   Y     N     Y    
+ ADD.D F6, F1, F7    230   262   266   268   269   Y     Y     N    
+ SW R4, -24(R2)      262   263   264   277   278   N     N     N    
+ S.D F7, 32(R4)      263   279   280   294   295   N     N     Y    
+ BNE R1, R3, QQ      279   280   281               N     N     N    
+ SW R2, 0(R4)              296   297   319   320   N     Y     Y    
+ HLT                 306   307   308               N     N     N    
+ HLT                 307                           N     N     Y    
 
 
-Total Number of access requsts for instruction cahce:0
+Total Number of access requsts for instruction cahce:33
 
-Number of instruction cahce hits:-1
+Number of instruction cahce hits:25
 
-Total Number of Cache requsts for Data Cache:0
+Total Number of Cache requsts for Data Cache:18
 
-Total Number of Cache Hits for Data Cache:0
+Total Number of Cache Hits for Data Cache:7
